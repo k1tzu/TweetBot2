@@ -1,81 +1,64 @@
 import asyncio
-import tweepy as tp
+import tweepy
 from telegram.constants import ParseMode
-import json
-
-class TwitterStream(tp.StreamingClient):
-    def __init__(self, tweetBot, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.tweetBot = tweetBot
-
-    def on_data(self, data):
-        self.tweetBot.tweet_queue.put_nowait(data)
-        self.disconnect()
-        return True
-
-    # def on_error(self, status):
-    #     print('status', status.text)
-
-    def on_error(self, status_code):
-        if status_code == 420:
-            return False
-
-    # def on_status(self, status):
-        # print("status", status)  # prints every tweet received
-
+from loguru import logger
 
 class TweetBot():
-    def __init__(self, myBot,  tweet_queue, twitter_user, bearer_token, chatid):
+    def __init__(self, myBot,  tweet_queue, bearer_token, chatid, db_manager):
         self.bot = myBot
         self.tweet_queue = tweet_queue
-        self.twitter_user = twitter_user
         self.bearer_token = bearer_token
         self.chatid = chatid
-        pass
+        self.db_manager = db_manager
+        self.usernames = None
+        self.tweets = None
+        self.client = tweepy.Client(bearer_token)
 
-    def get_twitter_user(self, json_data):
-        try:
-            twitter_user = json_data['users'][0]['username']
-            return twitter_user
-        except:
-            return False
+    def update_twitter_usernames(self, new_usernames):
+        self.usernames = new_usernames
 
     async def process_tweets(self, tweet_queue):
         while True:
             tweet = await tweet_queue.get()
+
             try:
+                logger.debug(f'processing {tweet}')
                 tb = self
 
-                d = json.loads(tweet)
+                d = tweet
 
-                if 'data' not in d:
-                    continue
-
-                twitter_user = tb.get_twitter_user(json_data=d['includes'])
+                user = self.db_manager.get_user(d.author_id)
+                logger.debug(user)
+                twitter_user = user[1]
 
                 if not twitter_user:
                     continue
 
-                has_media = tb.tweet_has_media(json_data=d['includes'])
+                has_media = False
+
+                # TODO: media is not detected
+                if hasattr(d, 'media'):
+                    has_media = True
 
                 reply = 'None'
 
-                if 'in_reply_to_screen_name' in d['data']:
-                    reply = d['data']['in_reply_to_screen_name']
+                if 'in_reply_to_user_id' in d['data']:
+                    reply = d['data']['in_reply_to_user_id']
 
                 tweet_id = d['data']['id']
-                tweet_link = "https://twitter.com/" + twitter_user + "/status/" + tweet_id
+                tweet_link = "https://twitter.com/" + twitter_user + "/status/" + str(tweet_id)
+                logger.debug(tweet_link)
 
-                if 'extended_tweet' in d['data']:
-                    tg_text = d['data']['extended_tweet']['full_text']
-                else:
-                    tg_text = d['data']['text']
+                tg_text = d['data']['text']
+
+                if not self.match_text(tg_text):
+                    continue
 
                 if (str(reply) == 'None'):
                     if ('RT @' not in tg_text):
                         if has_media:
                             await tb.bot.sendMessage(chat_id=self.chatid,
-                                                     text=tg_text + "\n\n" + "Via" + "|" + "<a href='" + tweet_link + "'>" + twitter_user + "</a>" + "|",
+                                                     text=tg_text + "\n\n" + "Like and Retweet" + ": " + "<a href='" + tweet_link + "'>" + twitter_user + "</a>",
                                                      read_timeout=200,
                                                      write_timeout=200,
                                                      connect_timeout=200,
@@ -83,51 +66,76 @@ class TweetBot():
                                                      disable_web_page_preview=False, parse_mode=ParseMode.HTML)
                         else:
                             await tb.bot.sendMessage(chat_id=self.chatid,
-                                                     text=tg_text + "\n\n" + "Via" + "|" + "<a href='" + tweet_link + "'>" + twitter_user + "</a>" + "|",
+                                                     text=tg_text + "\n\n" + "Like and Retweet" + ": " + "<a href='" + tweet_link + "'>" + twitter_user + "</a>",
                                                      read_timeout=200,
                                                      write_timeout=200,
                                                      connect_timeout=200,
                                                      pool_timeout=300,
                                                      disable_web_page_preview=True, parse_mode=ParseMode.HTML)
                     else:
-                        print("It's a retweet so not posting it")
+                        logger.warning("It's a retweet so not posting it")
                 else:
-                    print("It's a reply so not posting that")
+                    logger.warning("It's a reply so not posting that")
             except Exception as e:
-                print('error', e)
+                print(type(e).__name__, str(e), str(e.args))
         await asyncio.sleep(3)
 
-    def check_rules(self, client) -> None:
-        if client.get_rules()[3]['result_count'] != 0:
-            n_rules = client.get_rules()[0]
-            ids = [n_rules[i_tuple[0]][2] for i_tuple in enumerate(n_rules)]
-            client.delete_rules(ids)
-            client.add_rules(tp.StreamRule("from:" + self.twitter_user))
+    def match_text(self, text):
+        if 'some string' in text.casefold():
+            return True
+        if 'another match' in text.casefold():
+            return True
+        return False
+
+    def check_user_for_updates(self, user):
+        if user and 'most_recent_tweet_id' in user:
+            # Fetch the latest tweet ID from the API response
+            most_recent_tweet_id = user['most_recent_tweet_id']
+
+            # Get user details from the database
+            db_user = self.db_manager.get_user(user.id)
+
+            if not db_user:
+                self.db_manager.add_user(user.id, user.username, 0)
+
+            # Check if the user is new or the tweet ID is updated
+            if not db_user or db_user[2] != most_recent_tweet_id:
+                if most_recent_tweet_id not in self.tweets:
+                    self.tweets.append(most_recent_tweet_id)
         else:
-            client.add_rules(tp.StreamRule("from:" + self.twitter_user))
+            logger.debug("No data found for the user.")
+            return None
+
+    def get_new_tweets(self):
+        try:
+            response = self.client.get_tweets(self.tweets, expansions=['author_id'])
+        except Exception as e:
+            print(type(e).__name__, str(e), str(e.args))
+            return
+        if response and response.data:
+            for tweet in response.data:
+                logger.debug(tweet.data)
+                self.db_manager.update_most_recent_tweet_id(tweet.author_id, tweet.id)
+                self.tweet_queue.put_nowait(tweet)
 
     def fetch_tweets(self):
+        if self.usernames is None:
+            return
 
-        stream_tweet = TwitterStream(self, self.bearer_token, wait_on_rate_limit=True)
-        self.check_rules(stream_tweet)
-        stream_tweet.filter(expansions=['author_id', 'in_reply_to_user_id', 'attachments.media_keys'])
-
-    def get_tweet_url(self, json_data):
-        tweet_url = ''
         try:
-            if 'urls' not in json_data['entities']:
-                return tweet_url
-            for url in json_data['entities']['urls']:
-                if not 'https://twitter.com' in url['expanded_url']:
-                    tweet_url = tweet_url + "\n" + str(url['expanded_url'])
-        except:
-            tweet_url = ''
-        return tweet_url
+            response = self.client.get_users(usernames=self.usernames, user_fields=["id", "username", "most_recent_tweet_id"])
+        except Exception as e:
+            print(type(e).__name__, str(e), str(e.args))
+            return
 
-    def tweet_has_media(self, json_data):
-        try:
-            if len(json_data['media']):
-                return True
-        except:
-            return False
-        return False
+        if not response or not response.data:
+            return
+
+        self.tweets = []
+
+        for user in response.data:
+            self.check_user_for_updates(user)
+
+        #now we have an array with tweets to fetch
+        self.get_new_tweets()
+

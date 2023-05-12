@@ -2,10 +2,15 @@
 # CHANGES
 
 I've rewritten the code to work with Twitter's v2 API, incorporating asynchronous queues and the latest versions of Tweepy and Python-Telegram-Bot.
+Instead of requiring any keys from Twitter, it now only needs a Bearer token.
+What it does:
+1. takes a list of users from Google Sheets.
+2. saves them to local sqlite database
+3. checks latest posted Tweet for every user
+4. it the tweet was not processed - fetches it and uses filters to process it
+5. forward tweet to telegram channel
 
-Currently, it only works with one Twitter user.
-
-Instead of requiring any keys from Twitter, it now only needs a Bearer token
+credentials.json from Google Sheets API is needed
 
 # TweetBot
 
