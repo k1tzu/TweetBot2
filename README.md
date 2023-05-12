@@ -1,3 +1,12 @@
+
+# CHANGES
+
+I've rewritten the code to work with Twitter's v2 API, incorporating asynchronous queues and the latest versions of Tweepy and Python-Telegram-Bot.
+
+Currently, it only works with one Twitter user.
+
+Instead of requiring any keys from Twitter, it now only needs a Bearer token
+
 # TweetBot
 
 A simple Telegram Bot to Stream the tweets from any account from twitter to your telegram channel.  
@@ -24,8 +33,3 @@ git commit -m "Initial Commit"
 git push heroku HEAD:master --force
 ```
 3. Then go to the app page in your heroku dashboard and turn on the dynos.
-
-# Sample Channel
-This channel is just a sample channel that streams the tweets from the Twitter accounts which are usually regular with Manchester United football club latest news and stuff.
-
-Just visit [This Telegram Channel](https://t.me/notachannelyouwannavisitv2) to check how the bot works
