@@ -3,8 +3,9 @@ import tweepy
 from telegram.constants import ParseMode
 from loguru import logger
 
+
 class TweetBot():
-    def __init__(self, myBot,  tweet_queue, bearer_token, chatid, db_manager):
+    def __init__(self, myBot, tweet_queue, bearer_token, chatid, db_manager):
         self.bot = myBot
         self.tweet_queue = tweet_queue
         self.bearer_token = bearer_token
@@ -22,7 +23,7 @@ class TweetBot():
             tweet = await tweet_queue.get()
 
             try:
-                logger.debug(f'processing {tweet}')
+                logger.debug(f'processing {tweet} attachments {tweet.attachments}')
                 tb = self
 
                 d = tweet
@@ -34,11 +35,10 @@ class TweetBot():
                 if not twitter_user:
                     continue
 
-                has_media = False
+                has_media = True
 
-                # TODO: media is not detected
-                if hasattr(d, 'media'):
-                    has_media = True
+                if d.attachments is None:
+                    has_media = False
 
                 reply = 'None'
 
@@ -46,6 +46,7 @@ class TweetBot():
                     reply = d['data']['in_reply_to_user_id']
 
                 tweet_id = d['data']['id']
+                tweet_user_link = "https://twitter.com/" + twitter_user
                 tweet_link = "https://twitter.com/" + twitter_user + "/status/" + str(tweet_id)
                 logger.debug(tweet_link)
 
@@ -58,7 +59,7 @@ class TweetBot():
                     if ('RT @' not in tg_text):
                         if has_media:
                             await tb.bot.sendMessage(chat_id=self.chatid,
-                                                     text=tg_text + "\n\n" + "Like and Retweet" + ": " + "<a href='" + tweet_link + "'>" + twitter_user + "</a>",
+                                                     text="Tweet by: <a href='" + tweet_user_link + "'>" + twitter_user + "</a>\n\n" + tg_text + "\n\n" + "Like and Retweet" + ":\n" + tweet_link,
                                                      read_timeout=200,
                                                      write_timeout=200,
                                                      connect_timeout=200,
@@ -66,7 +67,7 @@ class TweetBot():
                                                      disable_web_page_preview=False, parse_mode=ParseMode.HTML)
                         else:
                             await tb.bot.sendMessage(chat_id=self.chatid,
-                                                     text=tg_text + "\n\n" + "Like and Retweet" + ": " + "<a href='" + tweet_link + "'>" + twitter_user + "</a>",
+                                                     text="Tweet by: <a href='" + tweet_user_link + "'>" + twitter_user + "</a>\n\n" + tg_text + "\n\n" + "Like and Retweet" + ":\n" + tweet_link,
                                                      read_timeout=200,
                                                      write_timeout=200,
                                                      connect_timeout=200,
@@ -77,7 +78,7 @@ class TweetBot():
                 else:
                     logger.warning("It's a reply so not posting that")
             except Exception as e:
-                print(type(e).__name__, str(e), str(e.args))
+                logger.error(f"{type(e).__name__}, {str(e)}, {str(e.args)}")
         await asyncio.sleep(3)
 
     def match_text(self, text):
@@ -108,9 +109,9 @@ class TweetBot():
 
     def get_new_tweets(self):
         try:
-            response = self.client.get_tweets(self.tweets, expansions=['author_id'])
+            response = self.client.get_tweets(self.tweets, expansions=['author_id', 'attachments.media_keys'])
         except Exception as e:
-            print(type(e).__name__, str(e), str(e.args))
+            logger.error(f"{type(e).__name__}, {str(e)}, {str(e.args)}")
             return
         if response and response.data:
             for tweet in response.data:
@@ -118,24 +119,34 @@ class TweetBot():
                 self.db_manager.update_most_recent_tweet_id(tweet.author_id, tweet.id)
                 self.tweet_queue.put_nowait(tweet)
 
-    def fetch_tweets(self):
-        if self.usernames is None:
+    def split_into_chunks(self, list_to_split, chunk_size=100):
+        """Split a list into smaller lists of up to chunk_size elements."""
+        for i in range(0, len(list_to_split), chunk_size):
+            yield list_to_split[i:i + chunk_size]
+
+    def fetch_users_and_tweets(self):
+        logger.debug(f"self.usernames {len(self.usernames)}")
+        if self.usernames is None or not len(self.usernames):
             return
 
-        try:
-            response = self.client.get_users(usernames=self.usernames, user_fields=["id", "username", "most_recent_tweet_id"])
-        except Exception as e:
-            print(type(e).__name__, str(e), str(e.args))
-            return
-
-        if not response or not response.data:
-            return
+        # Split usernames into chunks of 100
+        username_chunks = list(self.split_into_chunks(self.usernames))
 
         self.tweets = []
 
-        for user in response.data:
-            self.check_user_for_updates(user)
+        for chunk in username_chunks:
+            try:
+                response = self.client.get_users(usernames=chunk,
+                                                 user_fields=["id", "username", "most_recent_tweet_id"])
 
-        #now we have an array with tweets to fetch
+                if not response or not response.data:
+                    continue
+
+                for user in response.data:
+                    self.check_user_for_updates(user)
+            except Exception as e:
+                logger.error(f"{type(e).__name__}, {str(e)}, {str(e.args)}")
+                continue
+
+        # now we have an array with tweets to fetch
         self.get_new_tweets()
-

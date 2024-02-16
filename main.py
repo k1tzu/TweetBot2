@@ -34,6 +34,7 @@ async def update_usernames_periodically(tweet_bot, interval_seconds=3600):
         except ProtocolError:
             continue
 
+
 async def main():
     tweet_queue = LimitedQueue(maxsize=100)
     db_manager = DatabaseManager('x.db')
@@ -41,7 +42,8 @@ async def main():
     twitter_stream = ts.TweetBot(myBot, tweet_queue, bearer_token, chatid, db_manager)
     google_sheets = GoogleSheets(google_sheets_key)
     new_usernames = await loop.run_in_executor(None, google_sheets.get_usernames)
-    if not new_usernames or not len(new_usernames):
+
+    if not new_usernames or len(new_usernames) < 2:
         logger.error("No usernames provided")
         raise SystemExit(0)
 
@@ -55,10 +57,11 @@ async def main():
     async with Updater(myBot, Queue()):
         while True:
             try:
-                await loop.run_in_executor(None, twitter_stream.fetch_tweets)
-                await asyncio.sleep(5*60)
+                await loop.run_in_executor(None, twitter_stream.fetch_users_and_tweets)
+                await asyncio.sleep(5 * 60)
             except ProtocolError:
                 continue
+
 
 if __name__ == '__main__':
     loop = asyncio.get_event_loop()
