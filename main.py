@@ -39,7 +39,6 @@ async def main():
     tweet_queue = LimitedQueue(maxsize=100)
     db_manager = DatabaseManager('x.db')
 
-    twitter_stream = ts.TweetBot(myBot, tweet_queue, bearer_token, chatid, db_manager)
     google_sheets = GoogleSheets(google_sheets_key)
     new_usernames = await loop.run_in_executor(None, google_sheets.get_usernames)
 
@@ -47,7 +46,9 @@ async def main():
         logger.error("No usernames provided")
         raise SystemExit(0)
 
-    twitter_stream.update_twitter_usernames(new_usernames)
+    twitter_stream = ts.TweetBot(myBot, tweet_queue, bearer_token, chatid, db_manager, new_usernames)
+
+    # twitter_stream.update_twitter_usernames(new_usernames)
 
     asyncio.create_task(twitter_stream.process_tweets(tweet_queue))
 
@@ -57,8 +58,9 @@ async def main():
     async with Updater(myBot, Queue()):
         while True:
             try:
-                await loop.run_in_executor(None, twitter_stream.fetch_users_and_tweets)
-                await asyncio.sleep(5 * 60)
+                next_sleep_time = await loop.run_in_executor(None, twitter_stream.fetch_users_and_tweets)
+                # Wait for the dynamically calculated time before the next fetch
+                await asyncio.sleep(next_sleep_time)
             except ProtocolError:
                 continue
 
